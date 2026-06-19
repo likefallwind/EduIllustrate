@@ -10,3 +10,6 @@ test*
 logs
 anthropic_proxy.py
 *.log
+
+# local smoke-test data subsets
+data/benchmark/smoke*.json
