@@ -1,5 +1,8 @@
 import json
 import re
+import time
+import datetime
+import asyncio
 import warnings
 from typing import List, Dict, Any, Union, Optional
 import io
@@ -230,7 +233,9 @@ class LiteLLMWrapper:
                 "model": self.model_name,
                 "messages": formatted_messages,
                 "metadata": metadata,
-                "max_retries": 99
+                # disable litellm internal silent retry; we loop manually below so
+                # every individual HTTP attempt is timed and logged
+                "max_retries": 0,
             }
 
             # 如果有自定义端点，添加到参数中
@@ -245,8 +250,43 @@ class LiteLLMWrapper:
             else:
                 completion_kwargs["temperature"] = self.temperature
 
-            # 使用异步 API
-            response = await acompletion(**completion_kwargs)
+            # 使用异步 API —— 手动重试循环，逐次记录每个 HTTP 尝试的耗时/异常
+            _timing_log = os.environ.get("API_TIMING_LOG", "output/_api_timing.log")
+            _trace = (metadata or {}).get("trace_id", "?")
+            _max_attempts = 99
+            response = None
+            for _attempt in range(1, _max_attempts + 1):
+                _t0 = time.time()
+                try:
+                    response = await acompletion(**completion_kwargs)
+                    _dt = time.time() - _t0
+                    try:
+                        _ct = getattr(response.usage, "completion_tokens", 0) or 0
+                    except Exception:
+                        _ct = 0
+                    _tput = (_ct / _dt) if _dt else 0.0
+                    _line = (f"{datetime.datetime.now().isoformat()} trace={_trace} "
+                             f"model={self.model_name} attempt={_attempt} OK "
+                             f"elapsed={_dt:.1f}s completion_tokens={_ct} tput={_tput:.1f}tok/s\n")
+                    try:
+                        with open(_timing_log, "a") as _f:
+                            _f.write(_line)
+                    except Exception:
+                        pass
+                    break
+                except Exception as _e:
+                    _dt = time.time() - _t0
+                    _line = (f"{datetime.datetime.now().isoformat()} trace={_trace} "
+                             f"model={self.model_name} attempt={_attempt} ERR "
+                             f"elapsed={_dt:.1f}s {type(_e).__name__}: {str(_e)[:300]}\n")
+                    try:
+                        with open(_timing_log, "a") as _f:
+                            _f.write(_line)
+                    except Exception:
+                        pass
+                    if _attempt >= _max_attempts:
+                        raise
+                    await asyncio.sleep(min(2 ** _attempt, 30))
 
             # Track token usage
             if hasattr(response, 'usage') and response.usage:
