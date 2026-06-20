@@ -236,9 +236,11 @@ class LiteLLMWrapper:
                 # disable litellm internal silent retry; we loop manually below so
                 # every individual HTTP attempt is timed and logged
                 "max_retries": 0,
-                # raise the per-request timeout above litellm's 600s default:
-                # long M3 reasoning scenes can take >600s and were being cut off
-                "timeout": float(os.environ.get("LITELLM_REQUEST_TIMEOUT", "1800")),
+                # raise the per-request timeout well above litellm's 600s default:
+                # long M3 reasoning scenes can run many minutes and were being cut
+                # off. In principle generation should not be capped as long as the
+                # model keeps producing tokens; 3600s is just a hang safety net.
+                "timeout": float(os.environ.get("LITELLM_REQUEST_TIMEOUT", "3600")),
             }
 
             # 如果有自定义端点，添加到参数中
