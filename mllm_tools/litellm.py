@@ -255,67 +255,113 @@ class LiteLLMWrapper:
             else:
                 completion_kwargs["temperature"] = self.temperature
 
-            # 使用异步 API —— 手动重试循环，逐次记录每个 HTTP 尝试的耗时/异常
+            # 使用异步 API —— 流式 + 空闲超时(idle timeout)。
+            # 原则：只要模型还在持续吐 token 就不打断;连续 STREAM_IDLE_TIMEOUT 秒
+            # 收不到任何新 token 才判定真卡死并快速重试。这取代了"整请求总超时",
+            # 既不会误杀超长但仍在产出的推理场景,又能看到实时进度(心跳写入计时日志)。
             _timing_log = os.environ.get("API_TIMING_LOG", "output/_api_timing.log")
             _trace = (metadata or {}).get("trace_id", "?")
+            _idle_timeout = float(os.environ.get("STREAM_IDLE_TIMEOUT", "300"))
+            _heartbeat = float(os.environ.get("STREAM_HEARTBEAT", "60"))
+            _use_stream = os.environ.get("LITELLM_DISABLE_STREAM", "") == ""
             _max_attempts = 99
-            response = None
+
+            def _log(line):
+                try:
+                    with open(_timing_log, "a") as _f:
+                        _f.write(line)
+                except Exception:
+                    pass
+
+            content = None
+            usage_obj = None
             for _attempt in range(1, _max_attempts + 1):
                 _t0 = time.time()
+                stream = None
                 try:
-                    response = await acompletion(**completion_kwargs)
-                    _dt = time.time() - _t0
-                    try:
-                        _ct = getattr(response.usage, "completion_tokens", 0) or 0
-                    except Exception:
-                        _ct = 0
-                    _tput = (_ct / _dt) if _dt else 0.0
-                    _line = (f"{datetime.datetime.now().isoformat()} trace={_trace} "
+                    if _use_stream:
+                        skw = dict(completion_kwargs)
+                        skw["stream"] = True
+                        skw["stream_options"] = {"include_usage": True}
+                        stream = await acompletion(**skw)
+                        parts = []
+                        n_content = n_reason = 0
+                        last_hb = time.time()
+                        _it = stream.__aiter__()
+                        while True:
+                            try:
+                                chunk = await asyncio.wait_for(_it.__anext__(), timeout=_idle_timeout)
+                            except StopAsyncIteration:
+                                break
+                            cu = getattr(chunk, "usage", None)
+                            if cu:
+                                usage_obj = cu
+                            choices = getattr(chunk, "choices", None) or []
+                            if choices:
+                                delta = choices[0].delta
+                                piece = getattr(delta, "content", None)
+                                if piece:
+                                    parts.append(piece); n_content += len(piece)
+                                rpiece = getattr(delta, "reasoning_content", None)
+                                if rpiece:
+                                    n_reason += len(rpiece)
+                            now = time.time()
+                            if now - last_hb >= _heartbeat:
+                                _log(f"{datetime.datetime.now().isoformat()} trace={_trace} "
+                                     f"model={self.model_name} attempt={_attempt} STREAM "
+                                     f"elapsed={now-_t0:.0f}s content_chars={n_content} "
+                                     f"reasoning_chars={n_reason}\n")
+                                last_hb = now
+                        content = "".join(parts)
+                        _dt = time.time() - _t0
+                        _ct = (getattr(usage_obj, "completion_tokens", 0) or 0) if usage_obj else 0
+                        _tput = (_ct / _dt) if (_dt and _ct) else 0.0
+                        _log(f"{datetime.datetime.now().isoformat()} trace={_trace} "
                              f"model={self.model_name} attempt={_attempt} OK "
-                             f"elapsed={_dt:.1f}s completion_tokens={_ct} tput={_tput:.1f}tok/s\n")
-                    try:
-                        with open(_timing_log, "a") as _f:
-                            _f.write(_line)
-                    except Exception:
-                        pass
+                             f"elapsed={_dt:.1f}s completion_tokens={_ct} tput={_tput:.1f}tok/s "
+                             f"content_chars={n_content} reasoning_chars={n_reason} stream=1\n")
+                    else:
+                        response = await acompletion(**completion_kwargs)
+                        _dt = time.time() - _t0
+                        usage_obj = getattr(response, "usage", None)
+                        _ct = (getattr(usage_obj, "completion_tokens", 0) or 0) if usage_obj else 0
+                        content = response.choices[0].message.content
+                        _log(f"{datetime.datetime.now().isoformat()} trace={_trace} "
+                             f"model={self.model_name} attempt={_attempt} OK "
+                             f"elapsed={_dt:.1f}s completion_tokens={_ct} "
+                             f"tput={(_ct/_dt if _dt else 0):.1f}tok/s stream=0\n")
                     break
                 except Exception as _e:
                     _dt = time.time() - _t0
-                    _line = (f"{datetime.datetime.now().isoformat()} trace={_trace} "
-                             f"model={self.model_name} attempt={_attempt} ERR "
-                             f"elapsed={_dt:.1f}s {type(_e).__name__}: {str(_e)[:300]}\n")
-                    try:
-                        with open(_timing_log, "a") as _f:
-                            _f.write(_line)
-                    except Exception:
-                        pass
+                    _kind = "IDLE_TIMEOUT" if isinstance(_e, asyncio.TimeoutError) else type(_e).__name__
+                    _log(f"{datetime.datetime.now().isoformat()} trace={_trace} "
+                         f"model={self.model_name} attempt={_attempt} ERR "
+                         f"elapsed={_dt:.1f}s {_kind}: {str(_e)[:300]}\n")
                     if _attempt >= _max_attempts:
                         raise
                     await asyncio.sleep(min(2 ** _attempt, 30))
+                finally:
+                    if stream is not None:
+                        try:
+                            await stream.close()
+                        except Exception:
+                            try:
+                                stream.close()
+                            except Exception:
+                                pass
 
-            # Track token usage
-            if hasattr(response, 'usage') and response.usage:
-                input_tokens = getattr(response.usage, 'prompt_tokens', 0) or 0
-                output_tokens = getattr(response.usage, 'completion_tokens', 0) or 0
-                total_tokens = getattr(response.usage, 'total_tokens', 0) or 0
-
-                # Accumulate per-trace_id tokens (isolated across concurrent scenes/topics)
+            # Track token usage (per-trace_id, isolated across concurrent scenes/topics)
+            if usage_obj:
                 trace_id = metadata.get("trace_id") if metadata else None
                 if trace_id:
                     if trace_id not in self._trace_tokens:
                         self._trace_tokens[trace_id] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-                    self._trace_tokens[trace_id]["input_tokens"] += input_tokens
-                    self._trace_tokens[trace_id]["output_tokens"] += output_tokens
-                    self._trace_tokens[trace_id]["total_tokens"] += total_tokens
+                    self._trace_tokens[trace_id]["input_tokens"] += getattr(usage_obj, 'prompt_tokens', 0) or 0
+                    self._trace_tokens[trace_id]["output_tokens"] += getattr(usage_obj, 'completion_tokens', 0) or 0
+                    self._trace_tokens[trace_id]["total_tokens"] += getattr(usage_obj, 'total_tokens', 0) or 0
 
-            if self.print_cost:
-                cost = completion_cost(completion_response=response)
-                self.accumulated_cost += cost
-                print(f"Accumulated Cost: ${self.accumulated_cost:.10f}")
-
-            content = response.choices[0].message.content
-            if content is None:
-                print(f"Got null response from model. Full response: {response}")
+            if not content:
+                print(f"Got null/empty response from model (trace={_trace}).")
             return content
 
         except Exception as e:
