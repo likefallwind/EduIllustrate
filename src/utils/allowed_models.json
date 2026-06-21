@@ -21,6 +21,10 @@
     "openai/Qwen3-VL-235B-A22B-Instruct",
     "Kimi-K25",
     "qwen3.5-35b",
-    "MiniMax-M3"
+    "MiniMax-M3",
+    "doubao-seed-2.0-pro",
+    "doubao-seed-2.0-lite",
+    "deepseek-v3.2",
+    "deepseek-v4-pro"
   ]
 }
