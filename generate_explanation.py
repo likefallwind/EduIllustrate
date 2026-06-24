@@ -39,7 +39,10 @@ with open(allowed_models_path, 'r') as f:
     allowed_models = json.load(f).get("allowed_models", [])
 
 if load_dotenv:
-    load_dotenv(override=True)
+    # DOTENV_PATH lets a second model run (e.g. glm-5.2 via the gateway) point at
+    # its own .env without disturbing the main checkout's minimax .env. Unset =>
+    # None => default discovery, identical to before.
+    load_dotenv(os.environ.get("DOTENV_PATH") or None, override=True)
 
 
 def convert_explanation_to_gif(explanation_path: str, gif_path: str, max_duration: float = 3.0, fps: int = 10) -> bool:

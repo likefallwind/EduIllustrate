@@ -26,24 +26,30 @@ def _print_response(response_type: str, theorem_name: str, content: str, separat
     print(f"\n{separator}")
 
 def _extract_code(response_text: str) -> str:
-    """Extract code blocks from a text response.
+    """Extract the final Python program from a text response.
 
-    Extracts Python code blocks delimited by ```python markers. If no code blocks are found,
-    returns the entire response text.
+    Returns the single most complete ```python code block. Reasoning models (e.g. MiniMax-M3,
+    DeepSeek, o3) emit ``<think>...</think>`` blocks that contain illustrative ```python
+    snippets; these are stripped first, and the longest remaining block (the full program) is
+    chosen rather than concatenating every block — concatenation would glue stray snippets onto
+    the real program and break it. If no code blocks are found, returns the whole response.
 
     Args:
         response_text (str): The text response containing code blocks
 
     Returns:
-        str: The extracted code blocks joined by newlines, or the full response if no blocks found
+        str: The final/complete Python program, or the full response if no blocks found
     """
+    # Drop reasoning blocks so their illustrative snippets aren't mistaken for the program.
+    cleaned = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL | re.IGNORECASE)
     code = ""
-    code_blocks = re.findall(r'```python\n(.*?)\n```', response_text, re.DOTALL)
+    code_blocks = re.findall(r'```python\n(.*?)\n```', cleaned, re.DOTALL)
     if code_blocks:
-        code = "\n\n".join(code_blocks)
-    elif "```" not in response_text: # if no code block, return the whole response
-        code = response_text
-    return code 
+        # The complete program is the longest block; short snippets from the prose are discarded.
+        code = max(code_blocks, key=len)
+    elif "```" not in cleaned: # if no code block, return the whole response
+        code = cleaned
+    return code
 
 def extract_json(response: str) -> dict:
     """Extract and parse JSON content from a text response.

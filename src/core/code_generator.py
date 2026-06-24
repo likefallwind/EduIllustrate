@@ -312,10 +312,20 @@ class CodeGenerator:
         """
 
         for attempt in range(max_retries):
-            code_match = re.search(pattern, response_text, re.DOTALL)
+            # Reasoning models (MiniMax-M3, DeepSeek, o3) wrap their thinking in
+            # <think>...</think> and scatter illustrative ```python snippets inside it. Strip
+            # those so they can't be mistaken for the program.
+            cleaned = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL | re.IGNORECASE)
+            # Prefer the most complete fenced ```python block. A non-greedy findall + longest
+            # avoids the previous greedy `(.*)` span that glued every snippet/prose line between
+            # the first and last fence onto the real program and broke it.
+            blocks = re.findall(r'```python\s*\n?(.*?)```', cleaned, re.DOTALL)
+            if blocks:
+                return max(blocks, key=len).rstrip('\n')
+            code_match = re.search(pattern, cleaned, re.DOTALL)
             if code_match:
                 return code_match.group(1)
-            
+
             if attempt < max_retries - 1:
                 print(f"Attempt {attempt + 1}: Failed to extract code pattern. Retrying...")
                 # Regenerate response with a more explicit prompt

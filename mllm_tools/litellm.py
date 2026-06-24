@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 # Suppress Pydantic serialization warnings from litellm version mismatches
 warnings.filterwarnings("ignore", message="Expected.*fields but got.*serialized value may not be as expected")
 
-load_dotenv(override=True)  # 强制覆盖系统环境变量
+load_dotenv(os.environ.get("DOTENV_PATH") or None, override=True)  # 强制覆盖;DOTENV_PATH 可指定备用 .env(多模型并行隔离,见 generate_explanation.py)
 
 class LiteLLMWrapper:
     """Wrapper for LiteLLM to support multiple models and logging"""

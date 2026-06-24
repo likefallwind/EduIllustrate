@@ -1,6 +1,7 @@
 **/__pycache__/
 
 .env
+.env.gateway
 .venv
 baseline_videos
 models
