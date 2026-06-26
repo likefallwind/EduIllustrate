@@ -17,6 +17,8 @@ export PYTHONPATH=$(pwd):$PYTHONPATH
 
 API credentials live in `.env` (copy from `.env.template`). The system depends on heavy native libs (FFmpeg, LaTeX, Cairo/Pango) for Manim rendering — see README for the apt/brew install lists.
 
+LaTeX rendering of Chinese/chemistry scenes needs packages a basic TeX install lacks, and a missing one surfaces as a per-scene render failure (not an install error): **xelatex** (`texlive-xetex`) — the model emits CJK scenes via a `ctex`/`xeCJK` template with `tex_compiler="xelatex"`; **mhchem** (`texlive-science`) — chemistry `\ce{...}`. CJK rendering also needs a Noto/Source-Han CJK font installed.
+
 ## Common commands
 
 Generate an explanation (single problem index):
@@ -83,6 +85,12 @@ A FastMCP server exposing the generator as tools (`generate_diagram_and_text`, `
 - `annotation_app/` — standalone Flask/static app for human annotation of results.
 - `task_generator/prompts_raw/` — the full Manim prompt library (cheatsheets, scene planning, error-fix, RAG query generation, etc.).
 - Output layout per problem: `output/<run>/<problem_name>/{doc/, scene<k>/{code,media,prompt.json}, timing.json}`.
+
+## Operational gotchas
+
+- **Single endpoint per process.** Both `litellm.py` and `evaluate.py` call `load_dotenv(override=True)`, so all calls in one run share the `.env`'s `CUSTOM_API_BASE`/`CUSTOM_API_KEY`. To run a model on a *different* endpoint without touching the main `.env`, point `DOTENV_PATH` at an alternate env file (`litellm.py` honors it; `generate_explanation.py` uses this to route non-MiniMax models through a local gateway). You cannot drive two endpoints from the same checkout concurrently — use a separate env file or a git worktree.
+- **Re-running a previously failed problem.** Generation resumes per scene (a scene with `succ_rendered.txt` is skipped). But the incremental strategy makes Scene 2+ wait on Scene 1, detecting "Scene 1 done" via `scene1/code/scene1_code_tokens.json`; if a stale copy of that file exists with no `succ_rendered.txt`, the topic aborts in ~0.01s with `Scene 1 processing finished but render failed` before Scene 1 can re-render. To genuinely retry a failed problem, first delete its `scene*/render_failed.txt` and `scene*/code/scene*_code_tokens.json` (keep the existing `*_v*.py` to re-render without regenerating code).
+- **Evaluation/reporting lives in a separate repo.** Generation writes only to `output/`; it never writes to the benchmark repo. The sibling `edubenchmark` repo consumes EduIllustrate output via `scripts/eval/run_eduillustrate_judges.sh` (runs `evaluate.py` on a substrate, swapping the LLM-as-judge) and `scripts/eval/build_eduillustrate_report.py` (turns `evaluation_problem*.json` into `summary.json`/`scored.jsonl`/`report.html`).
 
 ## Conventions
 

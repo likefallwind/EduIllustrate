@@ -243,6 +243,14 @@ class LiteLLMWrapper:
                 "timeout": float(os.environ.get("LITELLM_REQUEST_TIMEOUT", "3600")),
             }
 
+            # Optional explicit output cap. Left unset by default (uncapped, matches
+            # MiniMax/Doubao runs). Set LITELLM_MAX_TOKENS to override when a backend
+            # rejects an over-large default — e.g. the local gateway injects
+            # max_tokens=65536 for kimi-k2.7-code, which caps at 32768 → HTTP 400.
+            _max_tokens = os.environ.get("LITELLM_MAX_TOKENS")
+            if _max_tokens:
+                completion_kwargs["max_tokens"] = int(_max_tokens)
+
             # 如果有自定义端点，添加到参数中
             if self.custom_api_base:
                 completion_kwargs["api_base"] = self.custom_api_base

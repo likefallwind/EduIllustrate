@@ -164,6 +164,44 @@ output/my_experiment/<problem_name>/doc/
 └── ...
 ```
 
+## 🧰 Helper Scripts (`scripts/`)
+
+Thin orchestration wrappers around `generate_explanation.py` / `evaluate.py` for whole-benchmark runs. Each script `cd`s to the repo root internally, so you can invoke it from anywhere as `bash scripts/<name>.sh`. They run detached and log under `output/<run>/`, and are **resumable** (re-running skips work already done).
+
+### Full-benchmark generation — `scripts/run_<model>.sh`
+
+`run_doubao_lite.sh`, `run_kimi_k27_code.sh`, `run_glm.sh`, `run_minimax3.sh` each generate the full 230-problem benchmark with one model. Models served by the local OpenAI-compatible **gateway** (doubao / glm / kimi / deepseek) are routed via a generated `.env.gateway` + `DOTENV_PATH` so they don't disturb the main `.env` (which points at the MiniMax endpoint); see the dotenv isolation note below.
+
+```bash
+bash scripts/run_kimi_k27_code.sh          # full 230 problems → output/kimi_k27_code/
+bash scripts/run_kimi_k27_code.sh 0        # canary: only index 0 (verify image input / params first)
+```
+
+Output lands in `output/<model>/`; watch progress with `tail -f output/<model>/run_*.log`.
+
+### Re-running failed problems — `scripts/rerun_*.sh`
+
+`rerun_xelatex.sh` / `rerun_mhchem.sh` re-run the subset of problems that failed only because of a missing LaTeX dependency (once it's installed). They first delete the stale `scene*/render_failed.txt` and `scene*/code/scene*_code_tokens.json` markers — without that, the resume logic aborts the topic in ~0.01s instead of re-rendering. Use these as a template for "retry these specific indices after fixing the environment."
+
+### Evaluation + report — `scripts/eval_eduillustrate.sh` (generic)
+
+One generic script scores any generation run with an LLM judge and writes an edubenchmark-format report (`summary.json` / `scored.jsonl` / `report.html` + per-problem `evaluation_*.json`). It is **non-destructive** (new eval + report dirs; never deletes existing results).
+
+```bash
+bash scripts/eval_eduillustrate.sh <gen_dir> <gen_label> [judge_model] [data_path]
+
+# Examples
+bash scripts/eval_eduillustrate.sh output/minimax3      MiniMax-M3            # MiniMax-M3 self-judge
+bash scripts/eval_eduillustrate.sh output/doubao_lite   doubao-seed-2.0-lite MiniMax-M3
+bash scripts/eval_eduillustrate.sh output/kimi_k27_code kimi-k2.7-code       MiniMax-M3
+```
+
+- **Judge endpoint routing is automatic**: `MiniMax-M3`/`MiniMax-M2.7` judges use the main `.env` (MiniMax endpoint) as-is; any other judge is routed through the local gateway by temporarily rewriting `.env` (backed up and restored on exit) and setting `LITELLM_MAX_TOKENS=32768`.
+- Eval results → `output/<gen>_eval_<judge>/`; report → `<edubenchmark>/reports/eval/eduillustrate/<label>__gen-full230_judge-<judge>/`.
+- Tunable: `WORKERS=6 RETRY=3 bash scripts/eval_eduillustrate.sh ...`.
+
+> **dotenv isolation:** both `litellm.py` and `evaluate.py` call `load_dotenv(override=True)`, so one process = one endpoint. To run a model on a different endpoint, the scripts either point `DOTENV_PATH` at an alternate env file (generation) or rewrite + restore `.env` (gateway judges). You cannot drive two endpoints from the same checkout in one process — but separate background runs on *different* endpoints (e.g. a gateway generation + a MiniMax evaluation) coexist fine.
+
 ## 📝 Usage Guide
 
 ### Command Line Arguments
